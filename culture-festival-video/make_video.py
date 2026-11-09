@@ -314,42 +314,97 @@ class OutroScene:
             im = Image.blend(im, Image.new("RGBA", (W, H), (255, 255, 255, 255)), fo)
         return im
 
+class VideoScene:
+    """Plays a segment of a video clip (with caption); its audio is mixed in later."""
+    def __init__(self, path, start, dur, caption=None, portrait=False):
+        self.path, self.start, self.dur, self.portrait = path, start, dur, portrait
+        self.cap = caption_layer(*caption) if caption else None
+        self.proc, self.idx, self.last = None, -1, None
+
+    def _open(self):
+        if self.portrait:
+            vf = (f"split[a][b];[a]scale={W//4}:{H//4}:force_original_aspect_ratio=increase,crop={W//4}:{H//4},"
+                  f"boxblur=8,scale={W}:{H},eq=brightness=-0.05[bg];[b]scale=-2:{int(H*1.4)},crop=iw:{int(H*0.94)}:0:(ih-oh)*0.72[fg];"
+                  f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={FPS}")
+        else:
+            vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps={FPS}"
+        self.proc = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", str(self.start), "-i", self.path,
+                                      "-t", str(self.dur + 1), "-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def frame(self, t):
+        if self.proc is None: self._open()
+        want = int(t * FPS)
+        while self.idx < want:
+            buf = self.proc.stdout.read(W * H * 3)
+            if len(buf) < W * H * 3: break
+            self.last = Image.frombytes("RGB", (W, H), buf); self.idx += 1
+        im = self.last.convert("RGBA")
+        paste_alpha(im, BRAND, (W - BRAND.width - 40, 36), ease_out((t - 0.2) / 0.5))
+        if self.cap:
+            a_in = ease_out((t - 0.35) / 0.55)
+            a_out = 1 - ease_inout((t - (self.dur - XF - 0.35)) / 0.35)
+            a = min(a_in, a_out)
+            paste_alpha(im, self.cap, (60 - (1 - a_in) * 220, H - self.cap.height - 50), a)
+        return im
+
+    def audio(self, sr=44100):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(self.start), "-i", self.path, "-t", str(self.dur),
+                              "-vn", "-ac", "2", "-ar", str(sr), "-f", "s16le", "-"], capture_output=True).stdout
+        a = np.frombuffer(raw, np.int16).reshape(-1, 2).astype(np.float64) / 32768
+        return a
+
 # ---------------------------------------------------------------- build timeline
 def build():
     global BRAND
     BRAND = brand_layer()
     D1, D2 = ("DAY 1", ORANGE), ("DAY 2", BLUE)
+    V = lambda f: os.path.join(PHOTOS, f)
     day1 = [
         ("766479f0-image.jpg", "개회 & 환영 인사", "Opening & Welcome"),
         ("1f6bd7ac-image.jpg", "가을 하늘 아래 모인 팀들", "Teams gather under the autumn sky"),
-        ("f704ba82-image.jpg", "남자 풋살 · 경기 전 한 컷!", "Men's Futsal · Pre-match lineup"),
-        ("c0dfea10-image.jpg", "뜨거운 승부의 시작", "Game on!"),
+        ("f704ba82-image.jpg", "호랭이1 · 경기 전 한 컷!", "Horangi 1 · Pre-match lineup"),
+        ("c0dfea10-image.jpg", "호랭이1 · 뜨거운 승부!", "Horangi 1 · Game on!"),
         ("e90ed253-image.jpg", "골문을 향해!", "Driving to goal!"),
-        ("b4f2df88-image.jpg", "여자 풋살 · 파이팅!", "Women's Futsal · Let's go!"),
+        ("b4f2df88-image.jpg", "여자부 · 여자 호랭이 파이팅!", "Women's Division · Go, Women's Horangi!"),
         ("f1402a4f-image.jpg", "함께 뛰는 즐거움", "The joy of playing together"),
         ("6086eda5-image.jpg", "숨멎는 승부차기", "Penalty shootout!"),
-        ("a215db73-image.jpg", "든든한 우리 골키퍼", "Our trusty keeper"),
-        ("94be74f9-image.jpg", "웃음 가득한 팀워크", "All smiles, all teamwork"),
-        ("ec40fe94-image.jpg", "남자부 4등 축하해요!", "Men's Division · 4th Place"),
-        ("8a5656b1-image.jpg", "남자부 3등 축하해요!", "Men's Division · 3rd Place"),
-        ("3a946961-image.jpg", "여자부 준우승 축하해요!", "Women's Division · Runners-up"),
+        ("a215db73-image.jpg", "여자 호랭이 · 든든한 골키퍼", "Women's Horangi · Our trusty keeper"),
+        ("94be74f9-image.jpg", "여자 호랭이 · 웃음 가득 팀워크", "Women's Horangi · All smiles"),
+        ("VID", "55b2dfb0-2026_11_09_08_41.mp4", 5.0, 8.0, "남자부 4등 · 호랭이1", "Men's Division · 4th Place · Horangi 1"),
+        ("ec40fe94-image.jpg", "남자부 4등 · 호랭이1 축하해요!", "Men's Division · 4th Place · Horangi 1"),
+        ("VID", "4ed6cc2b-2026_11_09_08_40.mp4", 15.0, 9.0, "남자부 3등 · 호랭이2", "Men's Division · 3rd Place · Horangi 2"),
+        ("8a5656b1-image.jpg", "남자부 3등 · 호랭이2 축하해요!", "Men's Division · 3rd Place · Horangi 2"),
+        ("VID", "bcdce686-2026_11_09_08_44.mp4", 14.0, 9.0, "여자부 준우승 · 여자 호랭이", "Women's Division · Runners-up · Women's Horangi"),
+        ("3a946961-image.jpg", "여자부 준우승 · 여자 호랭이 축하해요!", "Women's Division · Runners-up · Women's Horangi"),
     ]
     day2 = [
         ("e60b5779-image.jpg", "연합 예배 & 찬양", "United Worship & Praise", False),
         ("cfdbdc32-image.jpg", "다문화 축하 공연", "Multicultural celebration performance", True),
+        ("029b8c61-image.jpg", "한마음 운동회 · 투호 던지기", "Field day · Arrow-toss game (Tuho)", True),
+        ("f00cc60d-image.jpg", "투호 성공! 다 함께 환호", "Got it! Everyone cheers", True),
         ("dcd237c3-image.jpg", "모두 함께 레크리에이션", "Recreation for everyone", False),
+        ("VID", "50f8afe6-2026_11_09_08_36.mp4", 4.0, 10.0, "신나는 레크리에이션 타임!", "Let's dance together!", True),
         ("d231cb16-image.jpg", "웃음이 넘치는 시간", "Laughter all around", False),
     ]
     scenes = [TitleScene(6.5), PosterScene(load("0e0989cf-image.png"), 5.5),
               ChapterScene(4.5, "DAY 1", (255, 140, 60), (240, 80, 40), "Futsal Tournament", "이주민과 함께하는 풋살대회",
                            "11. 7 (Sat)  9AM – 1PM", "@ Bunpyeong Futsal Field (27 Yongpyeong-ro 94beon-gil)", 3)]
-    for i, (f, ko, en) in enumerate(day1):
-        scenes.append(PhotoScene(load(f), 5.6, (D1[0], D1[1], ko, en), motion=i))
+    for i, it in enumerate(day1):
+        if it[0] == "VID":
+            scenes.append(VideoScene(V(it[1]), it[2], it[3], (D1[0], D1[1], it[4], it[5])))
+        else:
+            f, ko, en = it
+            scenes.append(PhotoScene(load(f), 5.6, (D1[0], D1[1], ko, en), motion=i))
     scenes.append(ChapterScene(4.5, "DAY 2", (60, 110, 235), (30, 50, 160), "United Worship & Performance",
                                "연합 예배 & 다문화 축하 공연", "11. 8 (Sun)  12PM – 5:30PM",
                                "@ Bareun Sports World (535-83 Namseok-ro)", 5))
-    for i, (f, ko, en, portrait) in enumerate(day2):
-        scenes.append(PhotoScene(load(f), 6.4, (D2[0], D2[1], ko, en), motion=i + 1, portrait=portrait))
+    for i, it in enumerate(day2):
+        if it[0] == "VID":
+            scenes.append(VideoScene(V(it[1]), it[2], it[3], (D2[0], D2[1], it[4], it[5]), portrait=it[6]))
+        else:
+            f, ko, en, portrait = it
+            scenes.append(PhotoScene(load(f), 6.0, (D2[0], D2[1], ko, en), motion=i + 1, portrait=portrait))
     scenes.append(OutroScene(8.0))
     return scenes
 
@@ -378,7 +433,7 @@ def render(scenes, video_path):
         p.stdin.write(im.tobytes())
         if fi % 300 == 0: print(f"frame {fi}/{n}", flush=True)
     p.stdin.close(); p.wait()
-    return total
+    return total, starts
 
 # ---------------------------------------------------------------- music
 def music(path, dur, sr=44100):
@@ -436,11 +491,33 @@ def music(path, dur, sr=44100):
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
         w.writeframes((st * 32767).astype(np.int16).tobytes())
 
+def mix_clips(path, scenes, starts, sr=44100):
+    """Duck the music under video clips and lay in their live sound."""
+    with wave.open(path) as w:
+        a = np.frombuffer(w.readframes(w.getnframes()), np.int16).reshape(-1, 2).astype(np.float64) / 32768
+    n = len(a); duck = np.ones(n); live = np.zeros_like(a)
+    for sc, st in zip(scenes, starts):
+        if not isinstance(sc, VideoScene): continue
+        clip = sc.audio(sr)
+        i0 = int(st * sr); m = min(len(clip), n - i0)
+        env = np.ones(m); r = int(0.5 * sr)
+        env[:r] = np.linspace(0, 1, r); env[-r:] = np.linspace(1, 0, r)
+        rms = np.sqrt((clip ** 2).mean()) or 1
+        live[i0:i0 + m] += np.tanh(clip[:m] * (0.18 / rms)) * 0.8 * env[:, None]
+        duck[i0:i0 + m] = np.minimum(duck[i0:i0 + m], 1 - 0.75 * env)
+    a = a * duck[:, None] + live
+    a = np.clip(a, -1, 1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes((a * 32767).astype(np.int16).tobytes())
+
 if __name__ == "__main__":
     tmpdir = os.path.dirname(os.path.abspath(OUT))
     vid = os.path.join(tmpdir, "_video.mp4"); aud = os.path.join(tmpdir, "_music.wav")
-    total = render(build(), vid)
+    scenes = build()
+    total, starts = render(scenes, vid)
     music(aud, total)
+    mix_clips(aud, scenes, starts)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", vid, "-i", aud, "-c:v", "copy", "-c:a", "aac",
                     "-b:a", "192k", "-shortest", "-movflags", "+faststart", OUT], check=True)
     os.remove(vid); os.remove(aud)
